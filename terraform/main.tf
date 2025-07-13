@@ -41,6 +41,13 @@ resource "aws_iam_policy" "resize_lambda_policy" {
         ]
         Effect   = "Allow"
         Resource = "${aws_s3_bucket.resized_images_bucket.arn}/*"
+      },
+      {
+        Action = [
+          "dynamodb:PutItem",
+        ]
+        Effect = "Allow"
+        Resource = aws_dynamodb_table.image_metadata.arn
       }
     ]
   })
@@ -154,4 +161,19 @@ resource "aws_cloudwatch_log_group" "reszied_lambda_logs" {
   retention_in_days = 30
 
   tags = local.common_tags
+}
+
+resource "aws_dynamodb_table" "image_metadata" {
+  name           = "imageMetadata"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "ImageId"
+
+  attribute {
+    name = "ImageId"
+    type = "S"
+  }
+
+  tags = merge(local.common_tags ,{
+    Name = "imageMetadata"
+  })
 }

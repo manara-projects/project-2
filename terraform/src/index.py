@@ -2,11 +2,14 @@ import boto3
 from PIL import Image
 import os
 from io import BytesIO
+from datetime import datetime, timezone
 import sys
 print("PYTHONPATH:", sys.path)
 
 
 s3 = boto3.client('s3')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('imageMetadata')
 
 def lambda_handler(event, context):
     for record in event['Records']:
@@ -45,6 +48,21 @@ def lambda_handler(event, context):
             s3.put_object(Bucket=destination_bucket, Key=resized_key, Body=buffer, ContentType=response['ContentType'])
 
             print(f"Successfully resized {object_key} and saved to {destination_bucket}/{resized_key}")
+
+            table.put_item(
+                Item={
+                    'ImageId': os.path.basename(object_key),
+                    'OriginalBucket': bucket_name,
+                    'ResizedBucket': destination_bucket,
+                    'OriginalKey': object_key,
+                    'ResizedKey': resized_key,
+                    'OriginalSize': len(image_content),
+                    'ResizedSize': buffer.getbuffer().nbytes,
+                    'Timestamp': datetime.now(timezone.utc).isoformat()
+                }
+            )
+
+            print(f"Metadata saved to DynamoDB for image {object_key}")
 
         except Exception as e:
             print(f"Error processing {object_key}: {e}")
