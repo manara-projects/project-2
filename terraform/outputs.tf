@@ -13,3 +13,7 @@ output "resized_images_bucket_name" {
 output "logs" {
   value = aws_cloudwatch_log_group.reszied_lambda_logs.name
 }
+
+output "api_gateway_id" {
+  value = aws_api_gateway_rest_api.api_gateway.id
+}

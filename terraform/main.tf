@@ -46,7 +46,7 @@ resource "aws_iam_policy" "resize_lambda_policy" {
         Action = [
           "dynamodb:PutItem",
         ]
-        Effect = "Allow"
+        Effect   = "Allow"
         Resource = aws_dynamodb_table.image_metadata.arn
       }
     ]
@@ -164,16 +164,120 @@ resource "aws_cloudwatch_log_group" "reszied_lambda_logs" {
 }
 
 resource "aws_dynamodb_table" "image_metadata" {
-  name           = "imageMetadata"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "ImageId"
+  name         = "imageMetadata"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "ImageId"
 
   attribute {
     name = "ImageId"
     type = "S"
   }
 
-  tags = merge(local.common_tags ,{
+  tags = merge(local.common_tags, {
     Name = "imageMetadata"
   })
+}
+
+data "aws_iam_policy_document" "api_gateway_permission" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["apigateway.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_policy" "api_gateway_policy" {
+  name = "APIGatewayPolicy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "s3:PutObject"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_s3_bucket.original_images_bucket.arn}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "api_gateway_role" {
+  name               = "APIGatewayRole"
+  assume_role_policy = data.aws_iam_policy_document.api_gateway_permission.json
+}
+
+resource "aws_iam_role_policy_attachment" "api_gateway_allow_s3_attachment" {
+  role       = aws_iam_role.api_gateway_role.name
+  policy_arn = aws_iam_policy.api_gateway_policy.arn
+}
+
+resource "aws_api_gateway_rest_api" "api_gateway" {
+  name = "s3UploadImageAPI"
+}
+
+resource "aws_api_gateway_resource" "bucket_resource" {
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  parent_id   = aws_api_gateway_rest_api.api_gateway.root_resource_id
+  path_part   = "{bucket}" # Parameterize the bucket name
+}
+
+resource "aws_api_gateway_resource" "object_resource" {
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  parent_id   = aws_api_gateway_resource.bucket_resource.id
+  path_part   = "{object}" # Parameterize the object key
+}
+
+resource "aws_api_gateway_method" "put_method" {
+  rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
+  resource_id   = aws_api_gateway_resource.object_resource.id
+  http_method   = "PUT"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.header.Content-Type" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "s3_put_integration" {
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  resource_id = aws_api_gateway_resource.object_resource.id
+  http_method = aws_api_gateway_method.put_method.http_method
+
+  integration_http_method = "PUT"
+  type                    = "AWS"
+  uri                     = "arn:aws:apigateway:${var.region}:s3:path/${aws_s3_bucket.original_images_bucket.bucket}/{object}"
+
+
+  credentials = aws_iam_role.api_gateway_role.arn
+
+  request_parameters = {
+    "integration.request.header.Content-Type" = "method.request.header.Content-Type"
+    "integration.request.header.X-Amz-ACL"    = "private" # Or any other ACL policy
+  }
+
+  request_templates = {
+    "application/octet-stream" = <<EOF
+    #set($key = $util.urlDecode($input.params('object')))
+    {
+      "key": "$key"
+    }
+    EOF
+  }
+}
+
+resource "aws_api_gateway_deployment" "api_deployment" {
+  depends_on  = [aws_api_gateway_integration.s3_put_integration]
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+}
+
+resource "aws_api_gateway_stage" "api_stage" {
+  deployment_id = aws_api_gateway_deployment.api_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
+  stage_name    = var.env
 }
